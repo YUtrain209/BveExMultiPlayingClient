@@ -1,81 +1,72 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
+//using System.IO;
+//using System.Net.Http;
+//using System.Text;
+//using System.Text.Json;
+//UDP追加
+using System.Net;
+using System.Net.Sockets;
+
 using System.Threading;
 using System.Threading.Tasks;
-using BveEx.Extensions.Native;
-using BveEx.Extensions.MapStatements;
+//using BveEx.Extensions.Native;
+//using BveEx.Extensions.MapStatements;
 using BveEx.PluginHost;
 using BveEx.PluginHost.Plugins;
 using BveTypes.ClassWrappers;
-using System.Xml.Schema;
-using System.Linq;
-using BveEx.Extensions.PreTrainPatch;
+//using System.Xml.Schema;
+//using System.Linq;
+//using BveEx.Extensions.PreTrainPatch;
 
 namespace BveExMultiPlayingClient
 {
     [Plugin(PluginType.MapPlugin)]
     public class PluginMain : AssemblyPluginBase
     {
+        //UDP追加
+        private UdpClient udp;
+        private IPEndPoint serverEP;
+        private Task receiveTask;
+        private bool running = true;
+        private Guid clientId = Guid.NewGuid();
+
+        public static Dictionary<Guid, OtherTrainInfo> OtherTrainData
+            = new Dictionary<Guid, OtherTrainInfo>();
+
         //BveEX自列車番号設定オリジナルマップ構文取得用
-        private readonly IStatementSet Statements;
+        //private readonly IStatementSet Statements;
         //デバッグテキスト表示用
         private AssistantText debugText;
         //DDNSインターネット通信用
-        private static readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        //private static readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         //private const string ServerUrl = "http://naruchanaout.clear-net.jp:5001/api/update";
-        private const string ServerUrl = "http://naruchan-aout.softether.net:5001/api/update";
+        //private const string ServerUrl = "http://naruchan-aout.softether.net:5001/api/update";
         //private const string ServerUrl = "http://133.32.217.166:5001/api/update";
         //自列車情報（送信用）
-        TrainInfo myTrain = new TrainInfo();//自列車情報用インスタンスを生成
+        //TrainInfo myTrain = new TrainInfo();//自列車情報用インスタンスを生成
 
-        private static readonly object lockObj = new object();
+        //private static readonly object lockObj = new object();
         private Timer sendTimer;
 
         //他列車情報（受信用）
-        public static Dictionary<string, OtherTrainInfo> OtherTrainData { get; set; }
+        //public static Dictionary<string, OtherTrainInfo> OtherTrainData { get; set; }
 
-        private Timer receiveTimer;
+        //private Timer receiveTimer;
         private readonly object trainMapLockObj = new object();
-
-        //先行列車解除の有無用
-        //private Train Train;
-        //private PreTrainPatch PreTrainPatch;
-        
-        //先行列車解除の有無用クラス
-        /*private class PreTrainLocationConverter : IPreTrainLocationConverter
-        {
-            private readonly Train SourceTrain;
-            private readonly SectionManager SectionManager;
-
-            public PreTrainLocationConverter(Train sourceTrain, SectionManager sectionManager)
-            {
-                SourceTrain = sourceTrain;
-                SectionManager = sectionManager;
-            }
-
-            public PreTrainLocation Convert(PreTrainLocation source)
-                => SourceTrain.TrainInfo.TrackKey == "0" ? PreTrainLocation.FromLocation(SourceTrain.Location, SectionManager) : source;
-        }*/
-
 
         //コンストラクタ
         public PluginMain(PluginBuilder builder) : base(builder)
         {
             //BveEX自列車番号設定オリジナルマップ構文取得用
-            Statements = Extensions.GetExtension<IStatementSet>();
+            //Statements = Extensions.GetExtension<IStatementSet>();
             //デバッグテキスト表示用
             debugText = AssistantText.Create("");
             BveHacker.Assistants.Items.Add(debugText);
             //自列車情報（送信用）
-            myTrain.ClientId = Guid.NewGuid().ToString();//ユーザーIDを発行、自列車情報用インスタンスmyTrainに設定
-            //sendTimer = new Timer(SendDataToServer, null, 1000, 1000);//1秒ごとにデータ送信
+            //myTrain.ClientId = Guid.NewGuid().ToString();//ユーザーIDを発行、自列車情報用インスタンスmyTrainに設定
             //他列車情報（受信用）
-            OtherTrainData = new Dictionary<string, OtherTrainInfo>();//ここに移動
-            //receiveTimer = new Timer(ReceiveOtherClientsData, null, 1000, 1000);//1秒ごとにデータ受信//Tickに移動
+            //OtherTrainData = new Dictionary<string, OtherTrainInfo>();//ここに移動
 
             //イベント購読
             BveHacker.ScenarioCreated += OnScenarioCreated;
@@ -84,15 +75,41 @@ namespace BveExMultiPlayingClient
         //終了時処理
         public override void Dispose()
         {
+            //UDP追加
+            running = false;
+            udp?.Close();
+
             BveHacker.Assistants.Items.Remove(debugText);
             sendTimer?.Dispose();
-            receiveTimer?.Dispose();
+            //receiveTimer?.Dispose();
             BveHacker.ScenarioCreated -= OnScenarioCreated;
         }
 
         //フレーム毎処理
         public override void Tick(TimeSpan elapsed)
         {
+            //UDP追加
+            lock (trainMapLockObj)
+            {
+                foreach (var kv in OtherTrainData)
+                {
+                    var train = kv.Value;
+                    train.Location += train.Speed * elapsed.TotalSeconds;
+                }
+
+                foreach (var trains in BveHacker.Scenario.Trains)
+                {
+                    foreach (var other in OtherTrainData)
+                    {
+                        if (other.Key.ToString() == trains.Key)
+                        {
+                            trains.Value.Location = other.Value.Location;
+                            trains.Value.Speed = other.Value.Speed;
+                        }
+                    }
+                }
+            }
+            /*
             ApplyReceivedData(elapsed);
             if (OtherTrainData != null)
             {
@@ -108,48 +125,32 @@ namespace BveExMultiPlayingClient
                     }
                 }
             }
+            */
             //デバッグテキスト表示用
+            //UDP追加
+            debugText.Text =
+                $"自位置: {BveHacker.Scenario.VehicleLocation.Location:F1}m\n" +
+                $"自速度: {BveHacker.Scenario.VehicleLocation.Speed:F1}m/s\n" +
+                $"接続数: {OtherTrainData.Count}";
+            /*
             debugText.Text = "自列車番号: " + myTrain.TrainNumber +
                                  $"位置: {myTrain.Location:F1}m, 速度: {myTrain.Speed:F1}m/s";
-
-            /*if (BveHacker.Scenario.Trains.ContainsKey("0523m"))
-            {
-                try
-                {
-                debugText.Text = "自列車番号: " + myTrain.TrainNumber +
-                                    $"位置: {myTrain.Location:F1}m, 速度: {myTrain.Speed:F1}m/s" + Environment.NewLine +
-                                 //"他列車番号: " + "0523m" + $" :{BveHacker.Scenario.Trains["0523m"].IsEnabled} " +
-                                 //$"位置: {BveHacker.Scenario.Trains["0523m"].Location:F1}m, 速度: {BveHacker.Scenario.Trains["0523m"].Speed:F1}m/s";
-                    $"他列車番号: {OtherTrainData["0523m"].TrainNumber} :{BveHacker.Scenario.Trains["0523m"].IsEnabled} ,受信他列車:{OtherTrainData.Count} ,0523m受信:{OtherTrainData.ContainsKey("0523m")}" +
-                    $"位置: {OtherTrainData["0523m"].Location:F1}m, 速度: {OtherTrainData["0523m"].Speed:F1}m/s";
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"エラー: {ex.Message}");
-                }
-            }
-            if (BveHacker.Scenario.Trains.ContainsKey("0521m"))
-            {
-                try
-                {
-                debugText.Text = "自列車番号: " + myTrain.TrainNumber +
-                                    $"位置: {myTrain.Location:F1}m, 速度: {myTrain.Speed:F1}m/s" + Environment.NewLine +
-                                 //"他列車番号: " + "0521m" + $" :{BveHacker.Scenario.Trains["0521m"].IsEnabled} " +
-                                    //$"位置: {BveHacker.Scenario.Trains["0521m"].Location:F1}m, 速度: {BveHacker.Scenario.Trains["0521m"].Speed:F1}m/s";
-                    $"他列車番号: {OtherTrainData["0521m"].TrainNumber} :{BveHacker.Scenario.Trains["0521m"].IsEnabled} ,受信他列車:{OtherTrainData.Count} ,0521m受信:{OtherTrainData.ContainsKey("0521m")}" +
-                    $"位置: {OtherTrainData["0521m"].Location:F1}m, 速度: {OtherTrainData["0521m"].Speed:F1}m/s";
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"エラー: {ex.Message}");
-                }
-            }*/
-
+            */
         }
 
         //シナリオ作成イベント購読時の処理
         private void OnScenarioCreated(ScenarioCreatedEventArgs e)
         {
+            //UDP追加
+            udp = new UdpClient();
+            serverEP = new IPEndPoint(
+                IPAddress.Parse("127.0.0.1" +
+                ""),
+                5005);
+
+            sendTimer = new Timer(SendData, null, 0, 50);
+            receiveTask = Task.Run(ReceiveLoop);
+            /*
             sendTimer = new Timer(SendDataToServer, null, 1000, 1000);//1秒ごとにデータ送信
             receiveTimer = new Timer(ReceiveOtherClientsData, null, 1000, 1000);//1秒ごとにデータ受信
             //BveEX自列車番号設定オリジナルマップ構文取得用
@@ -158,14 +159,65 @@ namespace BveExMultiPlayingClient
                 ClauseFilter.Function("TrainNumber", 1));
             MapStatementClause function = put.Source.Clauses[put.Source.Clauses.Count - 1];
             myTrain.TrainNumber = function.Args[0] as string;//自列車情報用インスタンスmyTrainに列車番号を設定
-
-            //先行列車解除の有無
-            //Train = e.Scenario.Trains[]
-            //SectionManager sectionManager = e.Scenario.SectionManager;
-            //PreTrainPatch = Extensions.GetExtension<IPreTrainPatchFactory>().Patch(nameof(PreTrainPatch), sectionManager, new PreTrainLocationConverter(Train, sectionManager));
-
+            */
         }
 
+        //UDP追加
+        private void SendData(object state)
+        {
+            try
+            {
+                TrainPacket packet = new TrainPacket
+                {
+                    ClientId = clientId,
+                    TrackPosition = BveHacker.Scenario.VehicleLocation.Location,
+                    Speed = (float)BveHacker.Scenario.VehicleLocation.Speed,
+                    Length = 200,
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                };
+
+                byte[] data = packet.ToBytes();
+                udp.SendAsync(data, data.Length, serverEP);
+            }
+            catch { }
+        }
+
+        private async Task ReceiveLoop()
+        {
+            while (running)
+            {
+                try
+                {
+                    var result = await udp.ReceiveAsync();
+
+                    if (result.Buffer.Length != 38)
+                        continue;
+
+                    var packet = TrainPacket.FromBytes(result.Buffer);
+
+                    if (packet.ClientId == clientId)
+                        continue;
+
+                    HandleOtherTrain(packet);
+                }
+                catch { }
+            }
+        }
+
+        private void HandleOtherTrain(TrainPacket packet)
+        {
+            lock (trainMapLockObj)
+            {
+                if (!OtherTrainData.ContainsKey(packet.ClientId))
+                {
+                    OtherTrainData[packet.ClientId] = new OtherTrainInfo();
+                }
+
+                OtherTrainData[packet.ClientId].Location = packet.TrackPosition;
+                OtherTrainData[packet.ClientId].Speed = packet.Speed;
+            }
+        }
+        /*
         //自列車情報（送信用）イベント（1秒ごと）←次ここから書く（Location,Speedに関してはまずは1秒おき）毎フレームリスト化しない！
         private async void SendDataToServer(object state)
         {
@@ -231,9 +283,11 @@ namespace BveExMultiPlayingClient
                 }
             }
         }
+        */
     }
 
     //各列車インスタンス用の情報クラス
+    /*
     public class TrainInfo
     {
         //フィールド
@@ -283,9 +337,14 @@ namespace BveExMultiPlayingClient
             get { return speed; }
         }
     }
+    */
     public class OtherTrainInfo
     {
         //フィールド
+        //UDP追加
+        public double Location { get; set; }
+        public float Speed { get; set; }
+        /*
         //UserID
         private string clientId = "";
         //列車番号
@@ -330,6 +389,45 @@ namespace BveExMultiPlayingClient
         {
             set { speed = value; }
             get { return speed; }
+        }
+        */
+    }
+    //UDP追加
+    struct TrainPacket
+    {
+        public Guid ClientId;
+        public double TrackPosition;
+        public float Speed;
+        public short Length;
+        public long Timestamp;
+
+        public byte[] ToBytes()
+        {
+            byte[] buffer = new byte[38];
+
+            Array.Copy(ClientId.ToByteArray(), 0, buffer, 0, 16);
+            Array.Copy(BitConverter.GetBytes(TrackPosition), 0, buffer, 16, 8);
+            Array.Copy(BitConverter.GetBytes(Speed), 0, buffer, 24, 4);
+            Array.Copy(BitConverter.GetBytes(Length), 0, buffer, 28, 2);
+            Array.Copy(BitConverter.GetBytes(Timestamp), 0, buffer, 30, 8);
+
+            return buffer;
+        }
+
+        public static TrainPacket FromBytes(byte[] buffer)
+        {
+            TrainPacket p = new TrainPacket();
+
+            byte[] guidBytes = new byte[16];
+            Array.Copy(buffer, 0, guidBytes, 0, 16);
+            p.ClientId = new Guid(guidBytes);
+
+            p.TrackPosition = BitConverter.ToDouble(buffer, 16);
+            p.Speed = BitConverter.ToSingle(buffer, 24);
+            p.Length = BitConverter.ToInt16(buffer, 28);
+            p.Timestamp = BitConverter.ToInt64(buffer, 30);
+
+            return p;
         }
     }
 }
